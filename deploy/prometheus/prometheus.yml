@@ -1,0 +1,24 @@
+# A scrape job for chainindex on Kubernetes, to merge into your Prometheus config. The alerts and the dashboard tell
+# chains apart by the job label, so each chain becomes its own job, named after its Deployment (chainindex-base).
+rule_files: [alerts.yml]
+scrape_configs:
+  - job_name: chainindex
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: { names: [chainindex] }
+    relabel_configs:
+      # Only the indexers, and only pods that ask to be scraped.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        regex: indexer
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: job
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod

@@ -1,0 +1,72 @@
+# Base (chain 8453), 0.2 s blocks: Aerodrome's WETH/USDC pools, the pools its factories create, and their gauges.
+# The start blocks are recent, so the keyless endpoint can serve them; with RPC_API_KEY (a free PublicNode token)
+# set them as far back as you like, down to each contract's deployment.
+name: base
+chain_id: 8453
+block_seconds: 0.2
+rpc:
+  http: https://base-rpc.publicnode.com/{key}
+  ws: wss://base-rpc.publicnode.com/{key}
+  # PublicNode answers at most 9 addresses per eth_getLogs and refuses chain-wide topic queries.
+  addresses_per_request: 9
+  max_blocks_per_request: 10000
+ledger:
+  confirmations: 30        # 6 s
+live:
+  seal_seconds: 2
+
+contracts:
+  # Slipstream, Aerodrome's concentrated-liquidity DEX: every pool the newest factory creates is recorded in its
+  # PoolCreated, so its decoded view is a catalogue of pools.
+  - name: aerodrome_cl_factory
+    abi: AerodromeCLFactory
+    addresses:
+      - {address: "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef", start_block: 53130000, label: "Slipstream factory"}
+    creates: {event: PoolCreated, param: pool, contract: aerodrome_cl_pool}
+
+  # The pools themselves: Uniswap-v3-shaped Swap, Mint, Burn and Collect. Add more at runtime with
+  # `chainindex --chain base contracts add aerodrome_cl_pool 0x... --from-block N`.
+  - name: aerodrome_cl_pool
+    abi: AerodromeCLPool
+    start_block: 53130000
+    addresses:
+      - {address: "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59", label: "WETH/USDC, tick spacing 100"}
+      - {address: "0x4e392fbfe4d0557c82d2f97f02ec39daa31516dd", label: "WETH/USDC, tick spacing 1"}
+
+  # Basic (constant-product) pools. Every swap also emits Fees with the exact fee taken.
+  - name: aerodrome_pool_factory
+    abi: AerodromePoolFactory
+    addresses:
+      - {address: "0x420DD381b31aEf6683db6B902084cB0FFECe40Da", start_block: 53130000}
+    creates: {event: PoolCreated, param: pool, contract: aerodrome_pool}
+
+  - name: aerodrome_pool
+    abi: AerodromePool
+    start_block: 53130000
+    addresses:
+      - {address: "0xcdac0d6c6c59727a65f871236188350531885c43", label: "WETH/USDC"}
+
+  # The voter announces every gauge. `match_contract` keeps only the gauges of the pools listed above.
+  - name: aerodrome_voter
+    abi: AerodromeVoter
+    events: [GaugeCreated]
+    addresses:
+      - {address: "0x16613524e02aD97eDfeF371bC883F2F5d6C480A5", start_block: 53130000}
+    creates: {event: GaugeCreated, param: gauge, contract: aerodrome_cl_gauge}
+
+  - name: aerodrome_cl_gauge
+    abi: AerodromeCLGauge
+    events: [Deposit, Withdraw, ClaimRewards, NotifyReward]
+    track: matching
+    match_contract: {pool: aerodrome_cl_pool}
+
+  # Your own wallet: a kind with account_topics keeps only the logs that name one of `accounts`, so a wallet's
+  # transfers are indexed without anyone else's. Uncomment with your own address to try it.
+  # - name: wallet_tokens
+  #   abi: WETH9
+  #   account_topics: [1, 2]
+  #   start_block: 53130000
+  #   addresses:
+  #     - {address: "0x4200000000000000000000000000000000000006", label: "WETH"}
+# accounts:
+#   - {address: "0x...", label: "my wallet"}

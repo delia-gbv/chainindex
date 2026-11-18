@@ -1,0 +1,33 @@
+# Ethereum (chain 1), 12 s blocks: USDC transfers and Uniswap v3's busiest WETH/USDC pool. The start blocks are recent,
+# so the keyless endpoint can serve them; with RPC_API_KEY (a free PublicNode token) set them further back.
+name: ethereum
+chain_id: 1
+block_seconds: 12
+rpc:
+  http: https://ethereum-rpc.publicnode.com/{key}
+  ws: wss://ethereum-rpc.publicnode.com/{key}
+  addresses_per_request: 9
+  max_blocks_per_request: 2000
+ledger:
+  # About 2.4 minutes; Ethereum finalizes a block in about 13.
+  confirmations: 12
+
+contracts:
+  # One token, two events. A token this busy logs a few hundred thousand transfers a day.
+  - name: usdc
+    abi: ERC20
+    addresses:
+      - {address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", start_block: 26280000, label: "USDC"}
+
+  # The factory records every pool it creates; its decoded view is the catalogue of Uniswap v3 pools.
+  - name: uniswap_v3_factory
+    abi: UniswapV3Factory
+    addresses:
+      - {address: "0x1F98431c8aD98523631AE4a59f267346ea31F984", start_block: 26280000}
+    creates: {event: PoolCreated, param: pool, contract: uniswap_v3_pool}
+
+  - name: uniswap_v3_pool
+    abi: UniswapV3Pool
+    start_block: 26280000
+    addresses:
+      - {address: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", label: "USDC/WETH 0.05%"}

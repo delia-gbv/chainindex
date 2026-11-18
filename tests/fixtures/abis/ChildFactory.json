@@ -1,0 +1,11 @@
+[
+ {
+  "type": "event",
+  "name": "ChildCreated",
+  "anonymous": false,
+  "inputs": [
+   {"name": "parent", "type": "address", "indexed": true},
+   {"name": "childManager", "type": "address", "indexed": true}
+  ]
+ }
+]

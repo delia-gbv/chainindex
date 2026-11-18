@@ -1,0 +1,107 @@
+# Alerting rules for chainindex. Each chain is its own scrape job, so every rule is per job.
+#   promtool check rules deploy/prometheus/alerts.yml
+#   promtool test rules deploy/prometheus/alerts_test.yml
+# tests/test_alerts.py runs both when promtool is on PATH.
+#
+# Every timestamp gauge is exported as 0 from the moment the process starts until it is first set. The verifier and
+# live heads rules read 0 as "not since the process started" and measure that from process_start_time_seconds.
+groups:
+  - name: chainindex
+    rules:
+      # The tip lane writes a window every poll (about 10 s) whether or not new logs arrived, so ten silent minutes
+      # mean it is stuck: the RPC refuses it, ClickHouse is down, or the process hangs.
+      - alert: ChainindexLedgerStalled
+        expr: time() - max by (job) (chainindex_ledger_last_write_timestamp) > 600
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} has not written to ClickHouse for {{ $value | humanizeDuration }}."
+          description: Look for 'Tip lane step failed' in the log and at chainindex_rpc_requests_total by outcome.
+
+      # A pod Prometheus still discovers but cannot scrape: it is crash-looping, or its metrics port does not answer.
+      - alert: ChainindexMetricsMissing
+        expr: up{job=~"chainindex.*"} == 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }})."
+
+      # A chain that is not running at all. A pod that is gone (deleted, evicted, scaled to 0) leaves pod discovery,
+      # so it has no `up` series for the rule above and no ledger series for the stalled rule: both return nothing.
+      # The rules cannot know the job names, so a job that exported the ledger gauge in the last day and exports
+      # nothing now is missing. The value is the time since its last write. A chain removed on purpose alerts until
+      # it has been gone a day. A pod that is still discovered but failing its scrapes is left to the rule above.
+      - alert: ChainindexAbsent
+        expr: |
+          time() - max by (job) (max_over_time(chainindex_ledger_last_write_timestamp[1d]))
+          unless on (job) max by (job) (chainindex_ledger_last_write_timestamp)
+          unless on (job) max by (job) (up{job=~"chainindex.*"} == 0)
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} exports no metrics: no pod of it is being scraped. Its last write was {{ $value | humanizeDuration }} ago."
+          description: Check the Deployment's replicas and its pods' events (evicted, failing to schedule, deleted).
+
+      # Behind in chain time, not blocks, so one threshold fits a 2 s chain and a 0.1 s chain alike. The gap is
+      # measured from the confirmed head, so the confirmation depth is already left out. The block rate comes from
+      # how fast the confirmed head moved over the last 15 minutes.
+      - alert: ChainindexLedgerBehindHead
+        expr: |
+          (
+            max by (job) (chainindex_ledger_confirmed_block - chainindex_ledger_tip_block)
+            / clamp_min(max by (job) (deriv(chainindex_ledger_confirmed_block[15m])), 0.001)
+          ) > 300
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} is {{ $value | humanizeDuration }} behind the confirmed head."
+          description: >-
+            The tip lane is not keeping up: the RPC is throttling it, or windows are too large. Check
+            chainindex_rpc_requests_total by outcome and the round trip times on the dashboard.
+
+      # The verifier saves a window every 30 s once blocks are 15 minutes deep, so an hour without one means it
+      # stopped checking new blocks against the chain. The second half covers a process whose verifier has not
+      # checked once since it started: the gauge is still 0, and the value is how long the process has been up. A
+      # chain file that turns the verifier off leaves the gauge at 0 too, so its chain fires here an hour after start.
+      - alert: ChainindexVerifierStalled
+        expr: |
+          time() - max by (job) (chainindex_verify_last_check_timestamp > 0) > 3600
+          or (
+            time() - max by (job) (process_start_time_seconds) > 3600
+            and on (job) max by (job) (chainindex_verify_last_check_timestamp) == 0
+          )
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }}'s verifier has not checked a block for {{ $value | humanizeDuration }}."
+          description: Look for 'Verify step failed' in the log. Stored blocks are not being compared with the chain.
+
+      # A websocket that stays subscribed but stops sending heads looks healthy otherwise, and the stream's
+      # subscribers stop getting events. Every chain exports the gauge, as 0 until the first head, and with live
+      # disabled it stays 0. The second half fires when no head has arrived since the process started, only for
+      # chains whose live feed runs: each websocket exports chainindex_live_ws_connected once its first attempt
+      # subscribes or fails, and without websockets the seal polls heads on the stream lane, which nothing else uses.
+      - alert: ChainindexHeadsStale
+        expr: |
+          time() - max by (job) (chainindex_live_last_head_timestamp > 0) > 300
+          or (
+            time() - max by (job) (process_start_time_seconds) > 300
+            and on (job) max by (job) (chainindex_live_last_head_timestamp) == 0
+            and on (job) (count by (job) (chainindex_live_ws_connected) or count by (job) (chainindex_rpc_requests_total{lane="stream"}))
+          )
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} has seen no new block for {{ $value | humanizeDuration }}."
+          description: Check chainindex_live_ws_connected and chainindex_live_ws_reconnects_total, and the provider's status.
+
+      # Informational: the data is already fixed. The cause (a provider that left logs out, a reorg deeper than the
+      # confirmations) is in chain_<chain>.audits and chain_<chain>.orphaned_blocks. The two halves are joined with
+      # `or` because the repaired series only exists after the first repair, and adding a missing series gives nothing.
+      - alert: ChainindexDataRepaired
+        expr: |
+          sum by (job) (increase(chainindex_audits_total{result="repaired"}[1h])) > 0
+          or sum by (job) (increase(chainindex_orphaned_blocks_total[1h])) > 0
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $labels.job }} repaired stored data or found orphaned blocks in the last hour."

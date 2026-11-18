@@ -1,0 +1,136 @@
+# One-off tasks, kept as suspended CronJobs so `kubectl apply` can update them and you can start a run at any time:
+#   kubectl -n chainindex create job --from=cronjob/chainindex-base-init chainindex-base-init-$(date +%s)
+#   kubectl -n chainindex create job --from=cronjob/chainindex-dbt chainindex-dbt-$(date +%s)
+# Unsuspend one and set a schedule if you want it to run on its own.
+#
+# init creates chain_base and records the chain file's contracts. The indexer does the same when it starts, so this
+# is only needed to prepare the database before the first start, for example to build the dbt views first.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chainindex-base-init
+  labels: { app.kubernetes.io/name: chainindex-base-init, app.kubernetes.io/component: job }
+spec:
+  suspend: true
+  schedule: "0 0 1 1 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app.kubernetes.io/name: chainindex-base-init, app.kubernetes.io/component: job }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: init
+              image: chainindex
+              args: [--chain, base, init]
+              envFrom:
+                - configMapRef: { name: chainindex-settings }
+                - secretRef: { name: chainindex-env }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { memory: 512Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - name: tmp
+              emptyDir: { sizeLimit: 64Mi }
+---
+# dbt build creates the decoded views in events_base. Views read the raw tables live, so this is needed only when the
+# chain files or ABIs change, not on a schedule. The image does not ship dbt, so this clones the repository and runs
+# dbt with uv. With your own chain files, build an image holding your dbt project instead and drop the clone.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chainindex-dbt
+  labels: { app.kubernetes.io/name: chainindex-dbt, app.kubernetes.io/component: job }
+spec:
+  suspend: true
+  schedule: "0 0 1 1 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app.kubernetes.io/name: chainindex-dbt, app.kubernetes.io/component: job }
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: clone
+              image: alpine/git:2.47.2
+              # Pin --branch to a release tag so the views match the indexer's version.
+              args: [clone, --depth, "1", --branch, main, https://github.com/delia-gbv/chainindex, /work/chainindex]
+              env:
+                - { name: HOME, value: /work }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - { name: work, mountPath: /work }
+          containers:
+            - name: dbt
+              image: ghcr.io/astral-sh/uv:0.13.6-python3.15-trixie-slim
+              command:
+                - uv
+                - tool
+                - run
+                - --from
+                - dbt-core>=1.9,<2
+                - --with
+                - dbt-clickhouse>=1.9,<2
+                - dbt
+                - build
+                - --project-dir
+                - /work/chainindex/dbt
+                - --profiles-dir
+                - /work/chainindex/dbt/profiles
+                - --select
+                - tag:chain_base
+              envFrom:
+                - configMapRef: { name: chainindex-settings }
+                - secretRef: { name: chainindex-env }
+              env:
+                # Everything uv and dbt write goes to the scratch volume, so the root filesystem stays read-only.
+                - { name: HOME, value: /work }
+                - { name: UV_CACHE_DIR, value: /work/.cache/uv }
+                - { name: UV_TOOL_DIR, value: /work/.tools }
+              resources:
+                requests: { cpu: 250m, memory: 512Mi }
+                limits: { memory: 1Gi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: ["ALL"] }
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - name: work
+              emptyDir: { sizeLimit: 1Gi }
+            - name: tmp
+              emptyDir: { sizeLimit: 256Mi }

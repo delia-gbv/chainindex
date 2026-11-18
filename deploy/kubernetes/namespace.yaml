@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chainindex
+  labels:
+    # Nothing here needs more than the restricted Pod Security profile.
+    pod-security.kubernetes.io/enforce: restricted

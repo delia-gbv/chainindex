@@ -1,0 +1,80 @@
+# The indexer for one chain: the ledger, verifier and auditor writing chain_base in ClickHouse, and the live stream.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chainindex-base
+  labels: { app.kubernetes.io/name: chainindex-base, app.kubernetes.io/component: indexer }
+spec:
+  # One writer per chain database. Two would not corrupt anything, but they would fetch and write everything twice.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: chainindex-base }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: chainindex-base, app.kubernetes.io/component: indexer }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Writes are idempotent, so a cut-short shutdown loses nothing. 30 s is enough to close the streams.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: chainindex
+          image: chainindex
+          args: [--chain, base, run]
+          envFrom:
+            - configMapRef: { name: chainindex-settings }
+            - secretRef: { name: chainindex-env }
+          # env:
+          #   - { name: CHAININDEX_CHAINS_DIR, value: /etc/chainindex/chains }
+          ports:
+            - { name: stream, containerPort: 8547 }
+            - { name: metrics, containerPort: 9100 }
+          # The HTTP server starts after the tables are created and migrated, which can take a while on a big database.
+          startupProbe:
+            httpGet: { path: /healthz, port: stream }
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: stream }
+            periodSeconds: 30
+          # Ready once the stream's replay buffer is warm, so reconnecting subscribers resume without a gap.
+          readinessProbe:
+            httpGet: { path: /readyz, port: stream }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            # - { name: chains, mountPath: /etc/chainindex/chains, readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+        # - name: chains
+        #   configMap: { name: chainindex-chains }
+---
+# Bots subscribe at ws://chainindex-base.chainindex.svc:8547/stream. /status shows progress as JSON.
+apiVersion: v1
+kind: Service
+metadata:
+  name: chainindex-base
+  labels: { app.kubernetes.io/name: chainindex-base }
+spec:
+  selector: { app.kubernetes.io/name: chainindex-base }
+  ports:
+    - { name: stream, port: 8547, targetPort: stream }

@@ -1,0 +1,62 @@
+# Optional: the public read-only API over the decoded views. It needs the dbt views (jobs.yaml) and its own
+# read-only ClickHouse user (secret.example.yaml). Remove it from kustomization.yaml if you do not serve the API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chainindex-api
+  labels: { app.kubernetes.io/name: chainindex-api, app.kubernetes.io/component: api }
+spec:
+  # Request budgets are counted in each process, so every extra replica raises a client's real budget.
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: chainindex-api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: chainindex-api, app.kubernetes.io/component: api }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: chainindex
+          args: [api]
+          envFrom:
+            - configMapRef: { name: chainindex-api-settings }
+            - secretRef: { name: chainindex-api-env }
+          ports:
+            - { name: http, containerPort: 8080 }
+          # /healthz skips the rate limiter, so probes never use up a budget.
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+# Put your ingress or load balancer in front of this, and set API_CLIENT_IP_HEADER and API_TRUSTED_PROXIES to match.
+apiVersion: v1
+kind: Service
+metadata:
+  name: chainindex-api
+  labels: { app.kubernetes.io/name: chainindex-api }
+spec:
+  selector: { app.kubernetes.io/name: chainindex-api }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

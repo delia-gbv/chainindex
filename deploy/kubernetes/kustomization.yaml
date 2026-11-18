@@ -1,0 +1,46 @@
+# chainindex for one chain (Base) in the namespace chainindex.
+#   kubectl kustomize deploy/kubernetes          # see what it makes
+#   kubectl apply -k deploy/kubernetes
+# Create the Secrets first (secret.example.yaml). For another chain, copy indexer.yaml and change the name and --chain.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: chainindex
+labels:
+  - pairs: { app.kubernetes.io/part-of: chainindex }
+resources:
+  - namespace.yaml
+  - indexer.yaml
+  - api.yaml          # optional: the public read-only API
+  - jobs.yaml         # optional: init and dbt build, run by hand
+  - netpol.yaml       # optional: needs a CNI that enforces NetworkPolicy
+configMapGenerator:
+  # The generated name carries a hash of the values, so a change here restarts the pods that use it.
+  - name: chainindex-settings
+    literals:
+      - ENV=prod
+      - LOG_LEVEL=INFO
+      - METRICS_PORT=9100
+      - CLICKHOUSE_HOST=clickhouse.clickhouse.svc
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_SECURE=false
+      # Override the chain file without a new image. Leave out what you do not need to change.
+      - LIVE_ENABLED=true
+      - BACKFILL_REQUESTS_PER_SECOND=1
+  - name: chainindex-api-settings
+    literals:
+      - ENV=prod
+      - LOG_LEVEL=INFO
+      - CLICKHOUSE_HOST=clickhouse.clickhouse.svc
+      - CLICKHOUSE_PORT=8123
+      - API_CHAINS=base
+      # Behind a proxy, name the header with the client's address and trust only the proxy's addresses.
+      # - API_CLIENT_IP_HEADER=X-Forwarded-For
+      # - API_TRUSTED_PROXIES=10.0.0.0/8
+  # Your own chain files and ABIs, instead of the examples in the image. Uncomment here and in indexer.yaml.
+  # - name: chainindex-chains
+  #   files: [chains/base.yaml]
+images:
+  # Pin a version tag or a digest in production, so a restart never changes the code.
+  - name: chainindex
+    newName: ghcr.io/delia-gbv/chainindex
+    newTag: latest

@@ -1,0 +1,64 @@
+# Examples: adjust the namespace labels to your cluster. Once a pod is selected by a policy of a type, everything that
+# type does not allow is dropped, so start from deny-all and open what each pod needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Every pod resolves names, reaches ClickHouse, and reaches RPC providers (and GitHub and PyPI for the dbt job) on 443.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-egress }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: clickhouse } }
+      ports: [{ port: 8123 }, { port: 8443 }]
+    # The public internet only, so a compromised pod cannot reach other services in the cluster network.
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16] }
+      ports: [{ port: 443 }]
+---
+# Prometheus scrapes the indexer's metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-metrics-scrape }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: indexer } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ port: 9100 }]
+---
+# Bots in namespaces labelled chainindex-stream=allowed subscribe to the live stream. The kubelet's probes are not
+# affected by NetworkPolicy on most CNIs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-stream-subscribers }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: indexer } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { chainindex-stream: allowed } }
+      ports: [{ port: 8547 }]
+---
+# The ingress controller reaches the API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-api-ingress }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: api } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8080 }]

@@ -1,0 +1,88 @@
+[project]
+name = "chainindex"
+version = "0.2.0"
+description = "An EVM indexer for ClickHouse: confirmed raw logs written once, every block's hash verified, decoded on read"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Troy Burmeister" }, { name = "Delia" }]
+maintainers = [{ name = "Delia" }]
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.10",
+    "clickhouse-connect>=0.8",
+    "eth-abi>=5.0.0",
+    "eth-hash[pycryptodome]>=0.7",
+    "eth-utils>=5.0.0",
+    "prometheus-client>=0.21",
+    "pydantic>=2.11.1",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0.0",
+    "websockets>=15.0.0",
+]
+keywords = ["ethereum", "evm", "indexer", "clickhouse", "dbt", "blockchain"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Framework :: AsyncIO",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/delia-gbv/chainindex"
+Documentation = "https://github.com/delia-gbv/chainindex/tree/main/docs"
+Changelog = "https://github.com/delia-gbv/chainindex/blob/main/CHANGELOG.md"
+Issues = "https://github.com/delia-gbv/chainindex/issues"
+
+[project.scripts]
+chainindex = "chainindex.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.26.0", "pytest-xdist>=3.6", "ruff>=0.11.6", "mypy>=1.14", "pytest-cov>=6.0", "types-PyYAML>=6.0", "dbt-core>=1.9,<2", "dbt-clickhouse>=1.9,<2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+chainindex = ["py.typed", "chains/*.yaml", "abis/*.json"]
+
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "clickhouse: needs a local ClickHouse (CLICKHOUSE_HOST=localhost; see compose.yaml)",
+    "e2e: needs anvil (Foundry) and a local ClickHouse; indexes a real node end to end",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Long lines are the house style; zips over RPC payloads are lenient on purpose.
+ignore = ["E501", "B905", "UP040"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["chainindex"]
+mypy_path = "src"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+source = ["chainindex"]

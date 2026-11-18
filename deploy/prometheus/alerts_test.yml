@@ -1,0 +1,290 @@
+# Unit tests for alerts.yml (promtool 3.9 or newer, for start_timestamp):
+#   promtool test rules deploy/prometheus/alerts_test.yml
+# Every test starts at 2026-01-01 00:00:00 UTC (1767225600), so time() and the timestamp gauges are real Unix times.
+# Series are one sample a minute; a timestamp gauge that keeps up with the clock is 1767225600+60xN.
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  # ChainindexLedgerStalled
+  - name: a ledger that stopped writing is stalled; one that writes is not
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base"}
+        values: 1767225600+60x10 1767226200x30
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-optimism"}
+        values: 1767225600+60x40
+    alert_rule_test:
+      # Stale for 10 minutes at 20m, so the 5 minutes of `for` have not passed yet.
+      - eval_time: 22m
+        alertname: ChainindexLedgerStalled
+      - eval_time: 30m
+        alertname: ChainindexLedgerStalled
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: critical }
+            exp_annotations:
+              summary: chainindex-base has not written to ClickHouse for 20m 0s.
+              description: Look for 'Tip lane step failed' in the log and at chainindex_rpc_requests_total by outcome.
+
+  # ChainindexMetricsMissing and ChainindexAbsent
+  - name: a pod that is discovered but cannot be scraped is missing, and not absent
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: up{job="chainindex-base", instance="10.42.0.7:9100", pod="chainindex-base-0"}
+        values: 1x10 0x30
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base", instance="10.42.0.7:9100", pod="chainindex-base-0"}
+        values: 1767225600+60x10 stale
+      - series: up{job="chainindex-optimism", instance="10.42.0.8:9100", pod="chainindex-optimism-0"}
+        values: 1x40
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-optimism", instance="10.42.0.8:9100", pod="chainindex-optimism-0"}
+        values: 1767225600+60x40
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ChainindexMetricsMissing
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, instance: "10.42.0.7:9100", pod: chainindex-base-0, severity: critical }
+            exp_annotations:
+              summary: Prometheus cannot scrape chainindex-base (10.42.0.7:9100).
+      - eval_time: 30m
+        alertname: ChainindexAbsent
+
+  - name: a chain whose pod is gone is absent, though no up series is 0 and no ledger series is old
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      # The pod left discovery at 30m: its up and ledger series end with a staleness marker.
+      - series: up{job="chainindex-base", instance="10.42.0.7:9100", pod="chainindex-base-0"}
+        values: 1x30 stale
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base", instance="10.42.0.7:9100", pod="chainindex-base-0"}
+        values: 1767225600+60x30 stale
+      - series: up{job="chainindex-optimism", instance="10.42.0.8:9100", pod="chainindex-optimism-0"}
+        values: 1x60
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-optimism", instance="10.42.0.8:9100", pod="chainindex-optimism-0"}
+        values: 1767225600+60x60
+    alert_rule_test:
+      # Gone for 9 minutes: still within the 10 minutes of `for`.
+      - eval_time: 40m
+        alertname: ChainindexAbsent
+      - eval_time: 50m
+        alertname: ChainindexAbsent
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: critical }
+            exp_annotations:
+              summary: "chainindex-base exports no metrics: no pod of it is being scraped. Its last write was 20m 0s ago."
+              description: Check the Deployment's replicas and its pods' events (evicted, failing to schedule, deleted).
+      # The rules that read up and the ledger gauge see nothing, which is why ChainindexAbsent exists.
+      - eval_time: 50m
+        alertname: ChainindexMetricsMissing
+      - eval_time: 50m
+        alertname: ChainindexLedgerStalled
+
+  - name: a pod replaced within minutes is not absent
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base", pod="chainindex-base-0"}
+        values: 1767225600+60x10 stale
+      # The new pod's gauge is 0 until its first window, like any freshly started process.
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base", pod="chainindex-base-1"}
+        values: _x13 0 1767226440+60x30
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ChainindexAbsent
+
+  - name: a chain gone for more than a day no longer alerts
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base"}
+        values: 1767225600+60x10 stale
+    alert_rule_test:
+      - eval_time: 23h
+        alertname: ChainindexAbsent
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: critical }
+            exp_annotations:
+              summary: "chainindex-base exports no metrics: no pod of it is being scraped. Its last write was 22h 50m 0s ago."
+              description: Check the Deployment's replicas and its pods' events (evicted, failing to schedule, deleted).
+      - eval_time: 25h
+        alertname: ChainindexAbsent
+
+  # ChainindexLedgerBehindHead
+  - name: a tip lane that falls behind the confirmed head by more than 5 minutes of blocks is behind
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      # One block a second. Base's tip lane stops at block 600; Optimism's keeps 30 blocks behind.
+      - series: chainindex_ledger_confirmed_block{job="chainindex-base"}
+        values: 0+60x60
+      - series: chainindex_ledger_tip_block{job="chainindex-base"}
+        values: 0+60x10 600x50
+      - series: chainindex_ledger_confirmed_block{job="chainindex-optimism"}
+        values: 30+60x60
+      - series: chainindex_ledger_tip_block{job="chainindex-optimism"}
+        values: 0+60x60
+    alert_rule_test:
+      # 300 s behind first at 16m, so 15 minutes of `for` end at 31m.
+      - eval_time: 30m
+        alertname: ChainindexLedgerBehindHead
+      - eval_time: 40m
+        alertname: ChainindexLedgerBehindHead
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: warning }
+            exp_annotations:
+              summary: chainindex-base is 30m 0s behind the confirmed head.
+              description: >-
+                The tip lane is not keeping up: the RPC is throttling it, or windows are too large. Check
+                chainindex_rpc_requests_total by outcome and the round trip times on the dashboard.
+
+  # ChainindexVerifierStalled
+  - name: a verifier that stopped checking is stalled; one that checks is not
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: process_start_time_seconds{job="chainindex-base"}
+        values: 1767225600x90
+      - series: chainindex_verify_last_check_timestamp{job="chainindex-base"}
+        values: 1767225600+60x5 1767225900x85
+      - series: process_start_time_seconds{job="chainindex-optimism"}
+        values: 1767225600x90
+      - series: chainindex_verify_last_check_timestamp{job="chainindex-optimism"}
+        values: 1767225600+60x90
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: ChainindexVerifierStalled
+      - eval_time: 80m
+        alertname: ChainindexVerifierStalled
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: warning }
+            exp_annotations:
+              summary: chainindex-base's verifier has not checked a block for 1h 15m 0s.
+              description: Look for 'Verify step failed' in the log. Stored blocks are not being compared with the chain.
+
+  - name: a verifier that never checks after a restart is stalled once the process has been up an hour
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      # Restarted at 30m; the new process exports the gauge as 0 and its verifier never saves a window.
+      - series: process_start_time_seconds{job="chainindex-base"}
+        values: 1767223800x30 1767227400x90
+      - series: chainindex_verify_last_check_timestamp{job="chainindex-base"}
+        values: 1767223800+60x30 0x90
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-base"}
+        values: 1767225600+60x120
+    alert_rule_test:
+      # A freshly started process gets the same hour as a running one before its verifier counts as stalled.
+      - eval_time: 45m
+        alertname: ChainindexVerifierStalled
+      - eval_time: 95m
+        alertname: ChainindexVerifierStalled
+      - eval_time: 105m
+        alertname: ChainindexVerifierStalled
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: warning }
+            exp_annotations:
+              summary: chainindex-base's verifier has not checked a block for 1h 15m 0s.
+              description: Look for 'Verify step failed' in the log. Stored blocks are not being compared with the chain.
+
+  # ChainindexHeadsStale
+  - name: heads that stopped arriving are stale; heads that arrive are not
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: process_start_time_seconds{job="chainindex-base"}
+        values: 1767225600x40
+      - series: chainindex_live_last_head_timestamp{job="chainindex-base"}
+        values: 1767225600+60x10 1767226200x30
+      - series: chainindex_live_ws_connected{job="chainindex-base", socket="ws-0"}
+        values: 1x40
+      - series: process_start_time_seconds{job="chainindex-optimism"}
+        values: 1767225600x40
+      - series: chainindex_live_last_head_timestamp{job="chainindex-optimism"}
+        values: 1767225600+60x40
+      - series: chainindex_live_ws_connected{job="chainindex-optimism", socket="ws-0"}
+        values: 1x40
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: ChainindexHeadsStale
+      - eval_time: 25m
+        alertname: ChainindexHeadsStale
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: warning }
+            exp_annotations:
+              summary: chainindex-base has seen no new block for 15m 0s.
+              description: Check chainindex_live_ws_connected and chainindex_live_ws_reconnects_total, and the provider's status.
+
+  - name: a live chain that never gets a head is stale; a chain with live disabled is not
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      # Base's websocket never subscribes: it exports ws_connected 0 from its first attempt.
+      - series: process_start_time_seconds{job="chainindex-base"}
+        values: 1767225600x60
+      - series: chainindex_live_last_head_timestamp{job="chainindex-base"}
+        values: 0x60
+      - series: chainindex_live_ws_connected{job="chainindex-base", socket="ws-0"}
+        values: 0x60
+      # Optimism has no websocket URL, so its seal polls heads over HTTP on the stream lane, and fails.
+      - series: process_start_time_seconds{job="chainindex-optimism"}
+        values: 1767225600x60
+      - series: chainindex_live_last_head_timestamp{job="chainindex-optimism"}
+        values: 0x60
+      - series: chainindex_rpc_requests_total{job="chainindex-optimism", lane="stream", method="eth_getBlockByNumber", outcome="failed"}
+        values: 0+12x60
+      # Ethereum runs with LIVE_ENABLED=false: its gauge stays 0 for good, and only the other lanes make requests.
+      - series: process_start_time_seconds{job="chainindex-ethereum"}
+        values: 1767225600x60
+      - series: chainindex_live_last_head_timestamp{job="chainindex-ethereum"}
+        values: 0x60
+      - series: chainindex_ledger_last_write_timestamp{job="chainindex-ethereum"}
+        values: 1767225600+60x60
+      - series: chainindex_rpc_requests_total{job="chainindex-ethereum", lane="ledger", method="eth_getLogs", outcome="ok"}
+        values: 0+6x60
+    alert_rule_test:
+      # Up for 5 minutes at 5m, and the 5 minutes of `for` end at 11m.
+      - eval_time: 9m
+        alertname: ChainindexHeadsStale
+      - eval_time: 30m
+        alertname: ChainindexHeadsStale
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: warning }
+            exp_annotations:
+              summary: chainindex-base has seen no new block for 30m 0s.
+              description: Check chainindex_live_ws_connected and chainindex_live_ws_reconnects_total, and the provider's status.
+          - exp_labels: { job: chainindex-optimism, severity: warning }
+            exp_annotations:
+              summary: chainindex-optimism has seen no new block for 30m 0s.
+              description: Check chainindex_live_ws_connected and chainindex_live_ws_reconnects_total, and the provider's status.
+
+  # ChainindexDataRepaired
+  - name: a repair or an orphaned block in the last hour is reported; quiet counters are not
+    interval: 1m
+    start_timestamp: 1767225600
+    input_series:
+      - series: chainindex_audits_total{job="chainindex-base", kind="tip", result="repaired"}
+        values: 0x20 1x100
+      - series: chainindex_audits_total{job="chainindex-base", kind="tip", result="ok"}
+        values: 0+1x120
+      - series: chainindex_orphaned_blocks_total{job="chainindex-optimism"}
+        values: 0x30 2x90
+      - series: chainindex_audits_total{job="chainindex-ethereum", kind="tip", result="ok"}
+        values: 0+1x120
+      - series: chainindex_orphaned_blocks_total{job="chainindex-ethereum"}
+        values: 0x120
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ChainindexDataRepaired
+      - eval_time: 40m
+        alertname: ChainindexDataRepaired
+        exp_alerts:
+          - exp_labels: { job: chainindex-base, severity: info }
+            exp_annotations:
+              summary: chainindex-base repaired stored data or found orphaned blocks in the last hour.
+          - exp_labels: { job: chainindex-optimism, severity: info }
+            exp_annotations:
+              summary: chainindex-optimism repaired stored data or found orphaned blocks in the last hour.
+      # An hour after the last increase both have left the window.
+      - eval_time: 115m
+        alertname: ChainindexDataRepaired

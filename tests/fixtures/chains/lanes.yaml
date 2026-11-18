@@ -1,0 +1,22 @@
+# A test chain whose lanes split between two providers: logs from the chain's own RPC, headers, state reads and
+# address history from another, as a chain file does when one provider is better at each.
+name: lanes
+chain_id: 31337
+block_seconds: 0.1
+rpc:
+  http: https://archive.example/{key}
+  ws: wss://archive.example/{key}
+  addresses_per_request: 9
+  stream: {http: "https://rpc.example", addresses_per_request: 1000, requests_per_second: 2, max_concurrency: 2}
+  ledger: {http: "https://rpc.example", addresses_per_request: 1000, requests_per_second: 2, max_concurrency: 2}
+  backfill: {http: "https://rpc.example", addresses_per_request: 1000, requests_per_second: 2, max_concurrency: 3}
+  headers: {http: "https://archive.example/{key}", requests_per_second: 12, max_concurrency: 6}
+  headers_per_request: 500
+  reads: {http: "https://archive.example/{key}", requests_per_second: 4, max_concurrency: 2}
+ledger:
+  confirmations: 300
+contracts:
+  - name: uniswap_v3_factory
+    abi: UniswapV3Factory
+    addresses:
+      - {address: "0x1F98431c8aD98523631AE4a59f267346ea31F984", start_block: 100}

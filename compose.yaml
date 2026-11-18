@@ -1,0 +1,42 @@
+# A local stack: ClickHouse, chainindex following Base, and the read-only API on :8080.
+#   docker compose up -d
+#   (cd dbt && uv run dbt build --profiles-dir profiles)   # the decoded views the API reads
+#   curl localhost:8080/v1/base/status
+# Without RPC_API_KEY the keyless PublicNode endpoint is used, which serves recent history only.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.4
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["8123:8123"]
+    volumes: [clickhouse-data:/var/lib/clickhouse]
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 5s
+      retries: 10
+
+  chainindex:
+    build: .
+    command: [run]
+    environment:
+      CHAIN: base
+      CLICKHOUSE_HOST: clickhouse
+      RPC_API_KEY: ${RPC_API_KEY:-}
+      METRICS_PORT: "9100"
+    ports: ["8547:8547", "9100:9100"]
+    depends_on: { clickhouse: { condition: service_healthy } }
+
+  api:
+    build: .
+    command: [api]
+    environment:
+      API_CHAINS: base
+      CLICKHOUSE_HOST: clickhouse
+    ports: ["8080:8080"]
+    depends_on: { clickhouse: { condition: service_healthy } }
+
+volumes:
+  clickhouse-data:

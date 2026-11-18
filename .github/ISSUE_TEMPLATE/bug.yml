@@ -1,0 +1,14 @@
+name: Bug report
+description: Something indexes wrong, crashes or stalls
+labels: [bug]
+body:
+  - type: textarea
+    attributes: { label: What happened, description: "What you expected, and what you saw instead." }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: How to reproduce, description: "The chain, the relevant part of your chain file, and the commands you ran." }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Logs, description: "The service's log lines around the problem. Remove API keys.", render: text }
+  - type: input
+    attributes: { label: Version, description: "`pip show chainindex` or the image tag." }
