@@ -58,7 +58,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Releases publish to PyPI, to `ghcr.io/delia-gbv/chainindex` (amd64 and arm64), and to GitHub releases from a tag.
 
 ### Changed
-- chainindex lives at `github.com/delia-gbv/chainindex`, and Delia maintains it. Old `Tburm/chainindex` links redirect.
+- chainindex lives at `github.com/delia-gbv/chainindex`, and Delia maintains it.
 - `track: all` no longer needs `fetch: topics`: without it each child is fetched by address from its creation, for
   providers that refuse chain-wide topic queries.
 - A factory's `creates.param` and a child's `match` keys may be camelCase, as the ABI names them.
